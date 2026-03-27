@@ -1,0 +1,55 @@
+version: '3.9'
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - '3001:3001'
+    env_file:
+      - ./backend/.env
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379
+
+  workers:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.workers
+    env_file:
+      - ./backend/.env
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - '3000:3000'
+    env_file:
+      - ./frontend/.env
+    depends_on:
+      - backend
+
+volumes:
+  redis_data:
