@@ -25,24 +25,37 @@ const ScheduleMeetingSchema = z.object({
 
 export const meetingsRouter: FastifyPluginAsync = async (app) => {
   /** List meetings for an org */
-  app.get<{ Querystring: { orgId: string; page?: string } }>(
+  app.get<{ Querystring: { orgId: string; page?: string; search?: string; status?: string; sort?: string } }>(
     '/',
     async (req, reply) => {
-      const { orgId, page = '1' } = req.query;
+      const { orgId, page = '1', search, status, sort = 'newest' } = req.query;
       if (!orgId) return reply.status(400).send({ error: 'orgId required' });
+      if (search && search.length > 200) return reply.status(400).send({ error: 'search too long' });
 
       const limit = 20;
       const offset = (Number(page) - 1) * limit;
 
-      const { data, error } = await supabase
+      let query = supabase
         .from('meetings')
-        .select('*')
-        .eq('org_id', orgId)
-        .order('created_at', { ascending: false })
+        .select('*', { count: 'exact' })
+        .eq('org_id', orgId);
+
+      if (search) {
+        query = query.ilike('title', `%${search}%`);
+      }
+
+      if (status) {
+        query = query.eq('status', status);
+      }
+
+      query = query
+        .order('created_at', { ascending: sort === 'oldest' })
         .range(offset, offset + limit - 1);
 
+      const { data, error, count } = await query;
+
       if (error) return reply.status(500).send({ error: error.message });
-      return { meetings: data };
+      return { meetings: data, total: count ?? 0, page: Number(page), limit };
     },
   );
 
