@@ -1,0 +1,275 @@
+// Copyright (c) 2021, NVIDIA CORPORATION. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Riva ASR (Automatic Speech Recognition) service definitions.
+// Adapted from the NVIDIA Riva open-source proto files.
+// Source: https://github.com/nvidia-riva/python-clients/blob/main/riva/proto/riva_asr.proto
+
+syntax = "proto3";
+
+package nvidia.riva.asr;
+
+import "riva_audio.proto";
+
+option cc_enable_arenas = true;
+option java_multiple_files = true;
+option java_outer_classname = "RivaRuntimeProto";
+option java_package = "ai.riva";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Service
+// ─────────────────────────────────────────────────────────────────────────────
+
+service RivaSpeechRecognition {
+  // Performs synchronous (non-streaming) speech recognition: receive results
+  // after all audio has been sent and processed.
+  rpc Recognize(RecognizeRequest) returns (RecognizeResponse);
+
+  // Performs bidirectional streaming speech recognition: receive results while
+  // sending audio. This method is only available via gRPC API.
+  rpc StreamingRecognize(stream StreamingRecognizeRequest)
+      returns (stream StreamingRecognizeResponse);
+
+  // Enables clients to request the configuration of the current ASR service,
+  // or a specific model within the service.
+  rpc GetRivaSpeechRecognitionConfig(RivaSpeechRecognitionConfigRequest)
+      returns (RivaSpeechRecognitionConfigResponse);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Offline / batch recognition
+// ─────────────────────────────────────────────────────────────────────────────
+
+message RecognizeRequest {
+  // Provides information to the recognizer that specifies how to process the
+  // request.
+  RecognitionConfig config = 1;
+
+  // The audio data bytes encoded as specified in RecognitionConfig.
+  bytes audio = 2;
+}
+
+message RecognizeResponse {
+  // Sequential list of transcription results corresponding to sequential
+  // portions of audio.
+  repeated SpeechRecognitionResult results = 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Streaming recognition
+// ─────────────────────────────────────────────────────────────────────────────
+
+message StreamingRecognizeRequest {
+  oneof streaming_request {
+    // Provides information to the recognizer that specifies how to process the
+    // request. The first `StreamingRecognizeRequest` message must contain a
+    // `streaming_config` message.
+    StreamingRecognitionConfig streaming_config = 1;
+
+    // The audio data to be recognized. Sequential chunks of audio data are
+    // sent in sequential `StreamingRecognizeRequest` messages.
+    bytes audio_content = 2;
+  }
+}
+
+message StreamingRecognizeResponse {
+  // This repeated list contains the latest transcript(s) corresponding to
+  // audio currently being processed.
+  repeated StreamingRecognitionResult results = 1;
+
+  // Indicates the type of speech event.
+  SpeechEventType speech_event_type = 2;
+}
+
+enum SpeechEventType {
+  // No speech event specified.
+  SPEECH_EVENT_UNSPECIFIED = 0;
+
+  // This event indicates that the server has detected the end of the user's
+  // speech utterance and expects no additional speech. Therefore, the server
+  // will not process additional audio.
+  END_OF_SINGLE_UTTERANCE = 1;
+
+  // This event indicates that the server has detected the beginning of human
+  // voice activity in the stream. Only generated when `voice_activity_events`
+  // is set to `true`.
+  SPEECH_ACTIVITY_BEGIN = 2;
+
+  // This event indicates that the server has detected the end of human voice
+  // activity in the stream. Only generated when `voice_activity_events` is set
+  // to `true`.
+  SPEECH_ACTIVITY_END = 3;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Configuration messages
+// ─────────────────────────────────────────────────────────────────────────────
+
+message RecognitionConfig {
+  // The encoding of the audio data sent in the request. All encodings
+  // support only 1 channel (mono) audio.
+  nvidia.riva.audio.AudioEncoding encoding = 1;
+
+  // Sample rate in Hertz of the audio data sent in all `RecognizeRequest`
+  // messages.
+  int32 sample_rate_hertz = 2;
+
+  // Required. The language of the supplied audio as a BCP-47 language tag.
+  // Example: "en-US". Specifying "multi" enables automatic language detection.
+  string language_code = 3;
+
+  // Maximum number of recognition hypotheses to be returned.
+  int32 max_alternatives = 4;
+
+  // A list of up to 3 additional BCP-47 language tags, listing possible
+  // alternative languages of the supplied audio.
+  repeated string alternative_language_codes = 6;
+
+  // Model to use for recognition. Defaults to the best available model.
+  string model = 13;
+
+  // Enable automatic punctuation option: adds punctuation when it is silent.
+  bool enable_automatic_punctuation = 11;
+
+  // Enable word-level time offsets.
+  bool enable_word_time_offsets = 8;
+
+  // Enable speaker diarization: annotates which speaker is speaking.
+  SpeakerDiarizationConfig diarization_config = 19;
+
+  // Custom configuration key/value pairs.
+  // Used to pass task-specific options such as "task:translate".
+  map<string, string> custom_configuration = 24;
+}
+
+message StreamingRecognitionConfig {
+  // Provides information to the recognizer that specifies how to process the
+  // request.
+  RecognitionConfig config = 1;
+
+  // If `true`, interim results (tentative hypotheses) may be returned as they
+  // become available. Interim results are indicated with `is_final=false`.
+  bool interim_results = 2;
+}
+
+message SpeakerDiarizationConfig {
+  // If 'true', enables speaker detection for each recognized word in the
+  // top alternative of the recognition result using a speaker_tag provided
+  // in the WordInfo.
+  bool enable_speaker_diarization = 1;
+
+  // Maximum number of speakers in the conversation. This range gives you more
+  // flexibility by allowing the system to automatically determine the correct
+  // number of speakers. If not set, the default value is 2.
+  int32 max_speaker_count = 3;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Result messages
+// ─────────────────────────────────────────────────────────────────────────────
+
+message SpeechRecognitionResult {
+  // May contain one or more recognition hypotheses (up to the maximum
+  // specified in `max_alternatives`).
+  repeated SpeechRecognitionAlternative alternatives = 1;
+
+  // For multi-channel audio, this is the channel number corresponding to the
+  // recognized result for the audio from that channel.
+  int32 channel_tag = 2;
+
+  // Length of audio processed so far in seconds.
+  float audio_processed = 4;
+
+  // Language tag of the recognized audio.
+  string language_code = 5;
+}
+
+message StreamingRecognitionResult {
+  // May contain one or more recognition hypotheses (up to the maximum
+  // specified in `max_alternatives`).
+  repeated SpeechRecognitionAlternative alternatives = 1;
+
+  // If `false`, this `StreamingRecognitionResult` represents an interim
+  // result that may change. If `true`, this is the final time the speech
+  // service will return this particular `StreamingRecognitionResult`.
+  bool is_final = 2;
+
+  // An estimate of the likelihood that the recognizer will not change its
+  // guess about this interim result. Values range from 0.0 (completely
+  // unstable) to 1.0 (completely stable). This field is only provided for
+  // interim results (`is_final=false`).
+  float stability = 3;
+
+  // Length of audio processed so far in seconds.
+  float audio_processed = 5;
+
+  // Language tag of the recognized audio.
+  string language_code = 6;
+}
+
+message SpeechRecognitionAlternative {
+  // Transcript text representing the words that the user spoke.
+  string transcript = 1;
+
+  // The confidence estimate between 0.0 and 1.0.
+  float confidence = 2;
+
+  // A list of word-specific information for each recognized word.
+  repeated WordInfo words = 3;
+}
+
+message WordInfo {
+  // Time offset value in seconds relative to the beginning of audio, and
+  // corresponding to the start of the spoken word.
+  float start_time = 1;
+
+  // Time offset value in seconds relative to the beginning of audio, and
+  // corresponding to the end of the spoken word.
+  float end_time = 2;
+
+  // The word corresponding to this set of information.
+  string word = 3;
+
+  // The confidence estimate between 0.0 and 1.0.
+  float confidence = 4;
+
+  // A distinct integer value is assigned for every speaker within the audio.
+  // This field specifies which one of those speakers was detected to have
+  // spoken this word.
+  int32 speaker_tag = 5;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Config probe
+// ─────────────────────────────────────────────────────────────────────────────
+
+message RivaSpeechRecognitionConfigRequest {
+  // If specified, only return config for the given model name.
+  string model_name = 1;
+}
+
+message RivaSpeechRecognitionConfigResponse {
+  repeated RivaSpeechRecognitionConfig model_config = 1;
+}
+
+message RivaSpeechRecognitionConfig {
+  string model_name = 1;
+  repeated LanguageConfig language_config = 2;
+}
+
+message LanguageConfig {
+  string language_code = 1;
+  repeated nvidia.riva.audio.AudioEncoding encoding = 2;
+  int32 sample_rate_hertz = 3;
+}

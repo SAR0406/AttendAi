@@ -1,0 +1,44 @@
+{
+  "name": "attendai-backend",
+  "version": "1.0.0",
+  "description": "AttendAi backend – AI-powered meeting attendance service",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc --noEmit && tsc",
+    "start": "node dist/index.js",
+    "workers": "tsx src/workers/index.ts",
+    "lint": "eslint src --ext .ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.20.9",
+    "@aws-sdk/client-s3": "^3.540.0",
+    "@aws-sdk/s3-request-presigner": "^3.540.0",
+    "@deepgram/sdk": "^3.3.0",
+    "@supabase/supabase-js": "^2.42.0",
+    "bullmq": "^5.4.2",
+    "dotenv": "^16.4.5",
+    "fastify": "^5.8.4",
+    "@fastify/cors": "^10.1.0",
+    "@fastify/helmet": "^12.0.1",
+    "@fastify/rate-limit": "^10.3.0",
+    "ioredis": "^5.3.2",
+    "sharp": "^0.33.3",
+    "uuid": "^9.0.1",
+    "zod": "^3.22.4",
+    "@grpc/grpc-js": "^1.10.6",
+    "@grpc/proto-loader": "^0.7.13"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.2",
+    "@types/uuid": "^9.0.8",
+    "tsx": "^4.7.2",
+    "typescript": "^5.4.3",
+    "vitest": "^4.1.2",
+    "@typescript-eslint/eslint-plugin": "^7.5.0",
+    "@typescript-eslint/parser": "^7.5.0",
+    "eslint": "^8.57.0"
+  }
+}
