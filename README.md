@@ -33,9 +33,9 @@
 
 | Layer | Technology | Reason |
 |---|---|---|
-| Bot infrastructure | **Recall.ai** | Handles Zoom headless browser, bot policy, OAuth |
-| Transcription | **Deepgram Nova-3** (default) or **NVIDIA Riva whisper-large-v3** | Real-time diarization, 300ms latency; Riva adds multi-language + translation |
-| AI notes | **Claude claude-sonnet-4-6** | Best at structured extraction, long-context transcripts |
+| Bot infrastructure | **Recall.ai** (optional) | Handles Zoom headless browser, bot policy, OAuth |
+| Transcription | **Deepgram Nova-3** (default) or **NVIDIA Riva whisper-large-v3** | Real-time diarization; Riva adds multi-language + translation |
+| AI notes | **NVIDIA NIM (GLM-5 / Minimax-2.5)** default, **Claude** optional | Structured extraction with model selector |
 | Backend runtime | **Node.js + Fastify** | Webhook-heavy async I/O; 2–3× faster than Express |
 | Job queue | **BullMQ + Redis** | Persistent jobs, retry logic, per-concern concurrency |
 | Database | **Supabase (Postgres)** | Row-Level Security for multi-tenant isolation |
@@ -47,10 +47,11 @@
 
 ## Features
 
-- 🤖 **Bot attendance** — Recall.ai bot joins Zoom with an explicit name (`AttendAi (Recording)`) to satisfy Zoom ToS §8 recording-consent requirements
+- 🤖 **Bot attendance** — Recall.ai bot joins Zoom with an explicit name (`AttendAi (Recording)`) to satisfy Zoom ToS §8 recording-consent requirements (optional)
 - 📝 **Real-time diarized transcript** — speaker-labelled, streamed live to the dashboard via Supabase Realtime
-- 🔤 **NVIDIA Riva ASR** — whisper-large-v3 via gRPC (`grpc.nvcf.nvidia.com:443`) as an alternative transcription backend with multi-language auto-detection and translation support
-- ✨ **AI-generated meeting notes** — Claude extracts action items, decisions, key points, and open questions using a chunked transcript pipeline (10-min windows, 1-min overlap)
+- 🔤 **NVIDIA Riva ASR** — whisper-large-v3 via gRPC (`grpc.nvcf.nvidia.com:443`) with multi-language auto-detection and translation support
+- ✨ **AI-generated meeting notes** — NVIDIA NIM (GLM-5 / Minimax-2.5) by default, with Claude as a fallback option
+- 📥 **Recording imports** — skip Recall.ai by submitting a recording URL for free processing
 - 📸 **Smart screenshots** — content-change deduplication via pixel-diff; only meaningful frame changes are stored
 - 🔒 **Multi-tenant isolation** — Postgres Row-Level Security ensures one org can never read another's data
 - ♻️ **GDPR data deletion** — `DELETE /api/user-data` endpoint + background worker hard-deletes all data including R2 objects
@@ -65,7 +66,7 @@
 
 - Node.js 20+
 - Docker & Docker Compose (for local Redis)
-- Accounts: [Recall.ai](https://recall.ai), [Deepgram](https://deepgram.com), [Anthropic](https://anthropic.com), [Supabase](https://supabase.com), [Cloudflare R2](https://cloudflare.com/r2), [Clerk](https://clerk.com)
+- Accounts: [Supabase](https://supabase.com), [Cloudflare R2](https://cloudflare.com/r2), [Clerk](https://clerk.com), plus optional [Recall.ai](https://recall.ai), [Deepgram](https://deepgram.com), [Anthropic](https://anthropic.com), [NVIDIA](https://build.nvidia.com)
 
 ### 1. Clone & install
 
@@ -133,10 +134,15 @@ ngrok http 3001
 | `SUPABASE_URL` | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key (bypasses RLS for server-side ops) |
 | `REDIS_URL` | Redis connection URL |
-| `RECALL_API_KEY` | Recall.ai API key |
-| `RECALL_WEBHOOK_SECRET` | Recall.ai webhook signing secret |
-| `DEEPGRAM_API_KEY` | Deepgram API key |
-| `ANTHROPIC_API_KEY` | Anthropic Claude API key |
+| `RECALL_API_KEY` | Recall.ai API key (optional if using recording imports) |
+| `RECALL_WEBHOOK_SECRET` | Recall.ai webhook signing secret (optional if using recording imports) |
+| `DEEPGRAM_API_KEY` | Deepgram API key (only if `TRANSCRIPTION_PROVIDER=deepgram`) |
+| `LLM_PROVIDER` | `nim` (default) or `claude` |
+| `LLM_MODEL` | NIM model name, e.g. `glm-5` or `minimax-2.5` |
+| `NIM_API_BASE_URL` | NVIDIA NIM base URL (default: `https://integrate.api.nvidia.com/v1`) |
+| `NIM_API_KEY` | NVIDIA NIM API key (defaults to `NVIDIA_API_KEY` if empty) |
+| `NIM_ENABLE_WEB_SEARCH` | Enable NIM web-search tools when supported (default: `false`) |
+| `ANTHROPIC_API_KEY` | Anthropic Claude API key (only if `LLM_PROVIDER=claude`) |
 | `R2_ACCOUNT_ID` | Cloudflare account ID |
 | `R2_ACCESS_KEY_ID` | R2 access key ID |
 | `R2_SECRET_ACCESS_KEY` | R2 secret access key |
@@ -168,7 +174,7 @@ ngrok http 3001
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/meetings?orgId=` | List meetings for an org |
-| `POST` | `/api/meetings` | Schedule a meeting (or join immediately) |
+| `POST` | `/api/meetings` | Schedule a meeting, join immediately, or import a recording URL |
 | `GET` | `/api/meetings/:id` | Get meeting details |
 | `DELETE` | `/api/meetings/:id/bot` | Stop the bot |
 | `GET` | `/api/meetings/:id/transcript` | Get transcript segments (paginated) |
@@ -203,7 +209,7 @@ ngrok http 3001
 | Team | All features + CRM export | $12/seat/mo |
 | Enterprise | Custom retention · SSO · API | Custom |
 
-**COGS per meeting:** Recall.ai ~$0.10/min + Deepgram ~$0.008/min + Claude API ~$0.004/min ≈ **$0.11/min**. A 60-min meeting costs ~$6.60.
+**COGS per meeting:** if you use Recall.ai + Deepgram + Claude, expect roughly ~$0.11/min. Using NVIDIA NIM (GLM-5 / Minimax-2.5) + Riva with a recording import keeps costs on the free tier.
 
 ---
 
@@ -249,6 +255,27 @@ RIVA_TASK=transcribe         # or "translate" for translation to English
 ```
 
 You can obtain your NVIDIA API key at [build.nvidia.com](https://build.nvidia.com).
+
+### Recording-only workflow (no Recall.ai)
+
+If you want zero Recall.ai cost, import an existing recording URL. Ensure:
+
+```bash
+TRANSCRIPTION_PROVIDER=riva
+LLM_PROVIDER=nim
+LLM_MODEL=glm-5        # or minimax-2.5
+```
+
+Then POST to `/api/meetings` with a `recordingUrl` instead of a Zoom join URL:
+
+```json
+{
+  "title": "Weekly sync (recording)",
+  "recordingUrl": "https://storage.example.com/meeting.wav",
+  "orgId": "00000000-0000-0000-0000-000000000000",
+  "userId": "00000000-0000-0000-0000-000000000000"
+}
+```
 
 ### Equivalent Python CLI commands (for reference)
 

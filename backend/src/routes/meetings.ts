@@ -2,14 +2,25 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import { supabase } from '../db/client';
+import { transcriptQueue } from '../queue';
 import { createBot, stopBot } from '../services/recallService';
 
 const ScheduleMeetingSchema = z.object({
   title: z.string().optional(),
-  zoomJoinUrl: z.string().url(),
+  zoomJoinUrl: z.string().url().optional(),
+  recordingUrl: z.string().url().optional(),
   scheduledAt: z.string().datetime().optional(),
   orgId: z.string().uuid(),
   userId: z.string().uuid(),
+}).refine((data) => data.zoomJoinUrl || data.recordingUrl, {
+  message: 'Provide a Zoom join URL or a recording URL',
+  path: ['zoomJoinUrl'],
+}).refine((data) => !(data.zoomJoinUrl && data.recordingUrl), {
+  message: 'Choose either a Zoom join URL or a recording URL',
+  path: ['recordingUrl'],
+}).refine((data) => !(data.recordingUrl && data.scheduledAt), {
+  message: 'Recording imports cannot be scheduled',
+  path: ['scheduledAt'],
 });
 
 export const meetingsRouter: FastifyPluginAsync = async (app) => {
@@ -54,12 +65,12 @@ export const meetingsRouter: FastifyPluginAsync = async (app) => {
     return { meeting, notes, screenshots };
   });
 
-  /** Schedule (or immediately start) a bot for a meeting */
+  /** Schedule (or immediately start) a bot for a meeting, or import a recording */
   app.post('/', async (req, reply) => {
     const parsed = ScheduleMeetingSchema.safeParse(req.body);
     if (!parsed.success) return reply.status(400).send({ error: parsed.error.format() });
 
-    const { title, zoomJoinUrl, scheduledAt, orgId, userId } = parsed.data;
+    const { title, zoomJoinUrl, recordingUrl, scheduledAt, orgId, userId } = parsed.data;
     const meetingId = uuidv4();
 
     // Persist the meeting row first
@@ -68,16 +79,36 @@ export const meetingsRouter: FastifyPluginAsync = async (app) => {
       org_id: orgId,
       user_id: userId,
       title: title ?? 'Untitled Meeting',
-      zoom_join_url: zoomJoinUrl,
-      status: scheduledAt ? 'scheduled' : 'joining',
+      zoom_join_url: zoomJoinUrl ?? recordingUrl,
+      status: recordingUrl ? 'processing' : scheduledAt ? 'scheduled' : 'joining',
       scheduled_at: scheduledAt ?? null,
     });
 
     if (dbErr) return reply.status(500).send({ error: dbErr.message });
 
+    if (recordingUrl) {
+      if ((process.env.TRANSCRIPTION_PROVIDER ?? 'deepgram') !== 'riva') {
+        return reply.status(400).send({
+          error: 'Recording imports require TRANSCRIPTION_PROVIDER=riva',
+        });
+      }
+
+      await transcriptQueue.add('process-transcript', {
+        meetingId,
+        orgId,
+        audioUrl: recordingUrl,
+        enqueueNotes: true,
+      });
+
+      return reply.status(201).send({ meetingId, status: 'processing' });
+    }
+
     // If no scheduled time, join immediately
     if (!scheduledAt) {
       try {
+        if (!zoomJoinUrl) {
+          return reply.status(400).send({ error: 'Zoom join URL required' });
+        }
         const webhookBase = `${process.env.BACKEND_URL ?? 'http://localhost:3001'}/api/webhooks`;
         const bot = await createBot({
           meetingUrl: zoomJoinUrl,
