@@ -2,8 +2,10 @@ import 'dotenv/config';
 import { Worker } from 'bullmq';
 import { redis } from '../queue';
 import { supabase } from '../db/client';
-import { getBotTranscript } from '../services/recallService';
+import { getBotTranscript, getBotAudioUrl } from '../services/recallService';
 import { generateMeetingNotes } from '../services/claudeService';
+import { transcribeAudio } from '../services/rivaService';
+import type { RivaTranscribeOptions } from '../services/rivaService';
 import {
   shouldCaptureFrame,
   compressFrame,
@@ -12,57 +14,173 @@ import { uploadFile, deleteFile } from '../services/storageService';
 
 const connection = { connection: redis };
 
+/**
+ * Active transcription provider.
+ *
+ * Set TRANSCRIPTION_PROVIDER=riva in the backend .env to use NVIDIA Riva
+ * (whisper-large-v3 via gRPC). The default is "deepgram" which uses the
+ * Deepgram transcript already attached to the Recall.ai bot.
+ */
+type TranscriptionProvider = 'deepgram' | 'riva';
+const TRANSCRIPTION_PROVIDER: TranscriptionProvider =
+  (process.env.TRANSCRIPTION_PROVIDER as TranscriptionProvider | undefined) ?? 'deepgram';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Transcript Worker
-// Fetches the complete post-meeting transcript from Recall.ai and upserts it.
+// Fetches the complete post-meeting transcript and upserts it.
+// Provider:  deepgram (default) – uses Recall.ai's built-in Deepgram output
+//            riva               – downloads audio, re-transcribes via NVIDIA Riva
 // Concurrency: 5 – each handles one meeting at a time.
 // ─────────────────────────────────────────────────────────────────────────────
 const transcriptWorker = new Worker(
   'transcript-processing',
   async (job) => {
-    const { meetingId, botId } = job.data as { meetingId: string; botId: string };
-    console.log(`[transcript] Processing meeting ${meetingId}`);
+    const { meetingId, botId, orgId } = job.data as {
+      meetingId: string;
+      botId: string;
+      orgId: string;
+    };
+    console.log(
+      `[transcript] Processing meeting ${meetingId} via provider="${TRANSCRIPTION_PROVIDER}"`,
+    );
 
-    const rawSegments = await getBotTranscript(botId);
-
-    // Flatten word-level segments into utterance rows
-    const rows = rawSegments.flatMap((seg) => {
-      const words = seg.words ?? [];
-      if (words.length === 0) return [];
-      return [
-        {
-          meeting_id: meetingId,
-          speaker: seg.speaker,
-          text: words.map((w) => w.text).join(' '),
-          start_time: words[0]?.start ?? 0,
-          end_time: words[words.length - 1]?.end ?? 0,
-          is_final: true,
-        },
-      ];
-    });
-
-    if (rows.length > 0) {
-      // Upsert in batches of 100 to avoid request-size limits
-      const batchSize = 100;
-      for (let i = 0; i < rows.length; i += batchSize) {
-        await supabase.from('transcript_segments').insert(rows.slice(i, i + batchSize));
-      }
+    if (TRANSCRIPTION_PROVIDER === 'riva') {
+      await processTranscriptWithRiva(meetingId, botId, orgId);
+    } else {
+      await processTranscriptWithDeepgram(meetingId, botId, orgId);
     }
 
-    // Update duration
-    const lastSeg = rawSegments[rawSegments.length - 1];
-    const lastWord = lastSeg?.words?.[lastSeg.words.length - 1];
-    if (lastWord) {
-      await supabase
-        .from('meetings')
-        .update({ duration_secs: Math.ceil(lastWord.end) })
-        .eq('id', meetingId);
-    }
-
-    console.log(`[transcript] Done – ${rows.length} segments saved`);
+    console.log(`[transcript] Done for meeting ${meetingId}`);
   },
   { ...connection, concurrency: 5 },
 );
+
+/**
+ * Default path: use the Deepgram transcript already produced by Recall.ai.
+ */
+async function processTranscriptWithDeepgram(
+  meetingId: string,
+  botId: string,
+  orgId: string,
+) {
+  const rawSegments = await getBotTranscript(botId);
+
+  // Flatten word-level segments into utterance rows
+  const rows = rawSegments.flatMap((seg) => {
+    const words = seg.words ?? [];
+    if (words.length === 0) return [];
+    return [
+      {
+        meeting_id: meetingId,
+        org_id: orgId,
+        speaker: seg.speaker,
+        text: words.map((w) => w.text).join(' '),
+        start_time: words[0]?.start ?? 0,
+        end_time: words[words.length - 1]?.end ?? 0,
+        is_final: true,
+      },
+    ];
+  });
+
+  if (rows.length > 0) {
+    // Upsert in batches of 100 to avoid request-size limits
+    const batchSize = 100;
+    for (let i = 0; i < rows.length; i += batchSize) {
+      await supabase.from('transcript_segments').insert(rows.slice(i, i + batchSize));
+    }
+  }
+
+  const lastSeg = rawSegments[rawSegments.length - 1];
+  const lastWord = lastSeg?.words?.[lastSeg.words.length - 1];
+  if (lastWord) {
+    await supabase
+      .from('meetings')
+      .update({ duration_secs: Math.ceil(lastWord.end) })
+      .eq('id', meetingId);
+  }
+
+  console.log(`[transcript:deepgram] ${rows.length} segments saved`);
+}
+
+/**
+ * Riva path: download the meeting audio from Recall.ai then re-transcribe
+ * using NVIDIA Riva whisper-large-v3 (gRPC, grpc.nvcf.nvidia.com:443).
+ *
+ * Riva options are read from environment variables:
+ *   RIVA_LANGUAGE_CODE   – BCP-47 code, default "en". Use "multi" for auto-detection.
+ *   RIVA_TASK            – "transcribe" (default) or "translate" (translate to English)
+ */
+async function processTranscriptWithRiva(
+  meetingId: string,
+  botId: string,
+  orgId: string,
+) {
+  // 1. Download the meeting audio recording from Recall.ai
+  const audioUrl = await getBotAudioUrl(botId);
+  if (!audioUrl) {
+    console.warn(`[transcript:riva] No audio URL for bot ${botId} – skipping`);
+    return;
+  }
+
+  const audioResp = await fetch(audioUrl);
+  if (!audioResp.ok) {
+    throw new Error(`Failed to download audio from Recall.ai: ${audioResp.status}`);
+  }
+  const audioBuffer = Buffer.from(await audioResp.arrayBuffer());
+
+  // 2. Build Riva options from environment
+  const languageCode = process.env.RIVA_LANGUAGE_CODE ?? 'en';
+  const task = (process.env.RIVA_TASK ?? 'transcribe') as RivaTranscribeOptions['task'];
+
+  const rivaOpts: RivaTranscribeOptions = {
+    languageCode,
+    sampleRateHertz: 16000,
+    task,
+    enableDiarization: true,
+    maxSpeakerCount: 10,
+    encoding: 'LINEAR_PCM',
+  };
+
+  console.log(
+    `[transcript:riva] Sending ${audioBuffer.length} bytes to Riva ` +
+    `(lang=${languageCode}, task=${task})`,
+  );
+
+  // 3. Run Riva batch transcription
+  const segments = await transcribeAudio(audioBuffer, rivaOpts);
+
+  if (segments.length === 0) {
+    console.warn(`[transcript:riva] No segments returned for meeting ${meetingId}`);
+    return;
+  }
+
+  // 4. Persist segments
+  const rows = segments.map((s) => ({
+    meeting_id: meetingId,
+    org_id: orgId,
+    speaker: s.speaker,
+    text: s.text,
+    start_time: s.startTime,
+    end_time: s.endTime,
+    is_final: true,
+  }));
+
+  const batchSize = 100;
+  for (let i = 0; i < rows.length; i += batchSize) {
+    await supabase.from('transcript_segments').insert(rows.slice(i, i + batchSize));
+  }
+
+  // 5. Update meeting duration
+  const lastSeg = segments[segments.length - 1];
+  if (lastSeg && lastSeg.endTime > 0) {
+    await supabase
+      .from('meetings')
+      .update({ duration_secs: Math.ceil(lastSeg.endTime) })
+      .eq('id', meetingId);
+  }
+
+  console.log(`[transcript:riva] ${rows.length} segments saved for meeting ${meetingId}`);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Notes Worker (LLM)
@@ -251,4 +369,6 @@ for (const [name, worker] of Object.entries({
   );
 }
 
-console.log('AttendAi workers started – listening for jobs…');
+console.log(
+  `AttendAi workers started – transcription provider: ${TRANSCRIPTION_PROVIDER}`,
+);

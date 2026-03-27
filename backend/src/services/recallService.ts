@@ -78,6 +78,19 @@ export async function stopBot(botId: string): Promise<void> {
   if (!resp.ok) throw new Error(`Recall.ai stopBot failed: ${resp.status}`);
 }
 
+/**
+ * Retrieve the URL of the bot's recorded audio file.
+ * Returns null if the recording is not yet available.
+ */
+export async function getBotAudioUrl(botId: string): Promise<string | null> {
+  const resp = await fetch(`${RECALL_BASE}/bot/${botId}/`, { headers: headers() });
+  if (!resp.ok) throw new Error(`Recall.ai getBotAudioUrl failed: ${resp.status}`);
+  const data = await resp.json() as {
+    recordings?: { audio?: { download_url?: string } }[];
+  };
+  return data.recordings?.[0]?.audio?.download_url ?? null;
+}
+
 /** Fetch the full transcript after the meeting ends */
 export async function getBotTranscript(
   botId: string,

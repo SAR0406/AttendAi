@@ -26,12 +26,12 @@ export default function HomePage() {
             {
               icon: '📝',
               title: 'Live Transcript',
-              desc: 'Diarized, speaker-labelled transcript powered by Deepgram Nova-3 — streaming in real time to your dashboard.',
+              desc: 'Diarized, speaker-labelled transcript — streaming in real time to your dashboard. Supports Deepgram Nova-3 and NVIDIA Riva whisper-large-v3.',
             },
             {
               icon: '✨',
               title: 'Smart Notes',
-              desc: 'Claude claude-sonnet-4-6 extracts action items, decisions, key points, and open questions — no fluff.',
+              desc: 'Claude Sonnet extracts action items, decisions, key points, and open questions — no fluff.',
             },
           ].map((f) => (
             <div

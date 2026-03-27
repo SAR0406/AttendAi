@@ -34,7 +34,7 @@
 | Layer | Technology | Reason |
 |---|---|---|
 | Bot infrastructure | **Recall.ai** | Handles Zoom headless browser, bot policy, OAuth |
-| Transcription | **Deepgram Nova-3** | Real-time diarization (who said what), 300ms latency |
+| Transcription | **Deepgram Nova-3** (default) or **NVIDIA Riva whisper-large-v3** | Real-time diarization, 300ms latency; Riva adds multi-language + translation |
 | AI notes | **Claude claude-sonnet-4-6** | Best at structured extraction, long-context transcripts |
 | Backend runtime | **Node.js + Fastify** | Webhook-heavy async I/O; 2–3× faster than Express |
 | Job queue | **BullMQ + Redis** | Persistent jobs, retry logic, per-concern concurrency |
@@ -49,6 +49,7 @@
 
 - 🤖 **Bot attendance** — Recall.ai bot joins Zoom with an explicit name (`AttendAi (Recording)`) to satisfy Zoom ToS §8 recording-consent requirements
 - 📝 **Real-time diarized transcript** — speaker-labelled, streamed live to the dashboard via Supabase Realtime
+- 🔤 **NVIDIA Riva ASR** — whisper-large-v3 via gRPC (`grpc.nvcf.nvidia.com:443`) as an alternative transcription backend with multi-language auto-detection and translation support
 - ✨ **AI-generated meeting notes** — Claude extracts action items, decisions, key points, and open questions using a chunked transcript pipeline (10-min windows, 1-min overlap)
 - 📸 **Smart screenshots** — content-change deduplication via pixel-diff; only meaningful frame changes are stored
 - 🔒 **Multi-tenant isolation** — Postgres Row-Level Security ensures one org can never read another's data
@@ -143,6 +144,10 @@ ngrok http 3001
 | `R2_PUBLIC_URL` | R2 public CDN URL |
 | `FRONTEND_URL` | Frontend URL for CORS (default: `http://localhost:3000`) |
 | `BACKEND_URL` | Public URL of this backend (used in Recall.ai webhook URL) |
+| `TRANSCRIPTION_PROVIDER` | `deepgram` (default) or `riva` |
+| `NVIDIA_API_KEY` | NVIDIA API key (required when `TRANSCRIPTION_PROVIDER=riva`) |
+| `RIVA_LANGUAGE_CODE` | BCP-47 language code for Riva, e.g. `en`, `fr`. Use `multi` for auto-detection (default: `en`) |
+| `RIVA_TASK` | `transcribe` (default) or `translate` (translate audio to English) |
 
 ### Frontend (`frontend/.env.local`)
 
@@ -202,7 +207,79 @@ ngrok http 3001
 
 ---
 
-## Compliance
+## NVIDIA Riva ASR Integration
+
+AttendAi supports **NVIDIA Riva whisper-large-v3** as an alternative transcription backend. Riva runs on the NVIDIA API Catalog gRPC endpoint and provides:
+
+- Offline (batch) and real-time streaming transcription
+- Speaker diarization (who said what)
+- Multi-language auto-detection (`RIVA_LANGUAGE_CODE=multi`)
+- Translation to English (`RIVA_TASK=translate`)
+
+### How it works
+
+```
+Meeting ends
+     │
+     ▼
+Recall.ai downloads audio recording
+     │
+     ▼
+Riva worker sends audio to grpc.nvcf.nvidia.com:443
+     │   (gRPC Recognize RPC, whisper-large-v3 model)
+     ▼
+Diarized word-level results returned
+     │
+     ▼
+Grouped by speaker → TranscriptSegment[]
+     │
+     ▼
+Saved to Supabase → Claude notes generated
+```
+
+### Switching to Riva
+
+Set the following in `backend/.env`:
+
+```bash
+TRANSCRIPTION_PROVIDER=riva
+NVIDIA_API_KEY=nvapi-xxxxxxxxxxxx
+RIVA_LANGUAGE_CODE=en        # or "multi" for auto-detection
+RIVA_TASK=transcribe         # or "translate" for translation to English
+```
+
+You can obtain your NVIDIA API key at [build.nvidia.com](https://build.nvidia.com).
+
+### Equivalent Python CLI commands (for reference)
+
+**English transcription:**
+```bash
+python python-clients/scripts/asr/transcribe_file_offline.py \
+    --server grpc.nvcf.nvidia.com:443 --use-ssl \
+    --metadata function-id "b702f636-f60c-4a3d-a6f4-f3568c13bd7d" \
+    --metadata "authorization" "Bearer $NVIDIA_API_KEY" \
+    --language-code en \
+    --input-file <path_to_audio_file>
+```
+
+**French → English translation:**
+```bash
+python python-clients/scripts/asr/transcribe_file_offline.py \
+    --server grpc.nvcf.nvidia.com:443 --use-ssl \
+    --metadata function-id "b702f636-f60c-4a3d-a6f4-f3568c13bd7d" \
+    --metadata "authorization" "Bearer $NVIDIA_API_KEY" \
+    --language-code fr \
+    --custom-configuration "task:translate" \
+    --input-file <path_to_audio_file>
+```
+
+The AttendAi backend matches this exactly — the gRPC metadata (`function-id` + `authorization`) and the `custom_configuration` map are built automatically from your environment variables.
+
+### Audio format requirements
+
+Riva expects audio in **Mono, 16-bit** format. Supported encodings: WAV (LINEAR_PCM), FLAC, OPUS. The `encoding` and `sample_rate_hertz` options are configurable in `RivaTranscribeOptions` in `backend/src/services/rivaService.ts`.
+
+---
 
 - **Recording consent** (Zoom ToS §8): Bot is named `AttendAi (Recording)` — visible to all participants
 - **Data residency**: Storage layer is region-selectable; configure R2 and Supabase regions per customer
@@ -229,10 +306,14 @@ AttendAi/
 │   │   │   ├── webhooks.ts       # Recall.ai webhook handler
 │   │   │   └── reports.ts        # Full meeting report
 │   │   ├── services/
-│   │   │   ├── recallService.ts  # Recall.ai bot lifecycle
+│   │   │   ├── recallService.ts  # Recall.ai bot lifecycle + audio download
 │   │   │   ├── claudeService.ts  # Claude notes + transcript chunking
+│   │   │   ├── rivaService.ts    # NVIDIA Riva gRPC ASR client (whisper-large-v3)
 │   │   │   ├── storageService.ts # Cloudflare R2 upload/delete
 │   │   │   └── screenshotService.ts # Frame deduplication
+│   │   ├── proto/
+│   │   │   ├── riva_asr.proto    # NVIDIA Riva ASR service definition
+│   │   │   └── riva_audio.proto  # Audio encoding definitions
 │   │   └── workers/
 │   │       └── index.ts          # All BullMQ workers
 │   ├── Dockerfile

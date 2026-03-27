@@ -140,7 +140,7 @@ export const webhooksRouter: FastifyPluginAsync = async (app) => {
 
         // Enqueue post-processing jobs
         await Promise.all([
-          transcriptQueue.add('process-transcript', { meetingId, botId }),
+          transcriptQueue.add('process-transcript', { meetingId, botId, orgId }),
           notesQueue.add('generate-notes', { meetingId, orgId }),
           screenshotQueue.add('process-screenshots', { meetingId, botId, orgId }),
         ]);
