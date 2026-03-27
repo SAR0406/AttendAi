@@ -6,12 +6,13 @@ import { transcriptQueue } from '../queue';
 import { createBot, stopBot } from '../services/recallService';
 
 const ScheduleMeetingSchema = z.object({
-  title: z.string().optional(),
+  title: z.string().min(1).max(255).optional(),
   zoomJoinUrl: z.string().url().optional(),
   recordingUrl: z.string().url().optional(),
   scheduledAt: z.string().datetime().optional(),
-  orgId: z.string().uuid(),
-  userId: z.string().uuid(),
+  orgId: z.string().min(1),
+  /** Clerk user IDs can be UUIDs or the "user_xxx" format */
+  userId: z.string().min(1),
 }).refine((data) => data.zoomJoinUrl || data.recordingUrl, {
   message: 'Provide a Zoom join URL or a recording URL',
   path: ['zoomJoinUrl'],
@@ -24,25 +25,42 @@ const ScheduleMeetingSchema = z.object({
 });
 
 export const meetingsRouter: FastifyPluginAsync = async (app) => {
-  /** List meetings for an org */
-  app.get<{ Querystring: { orgId: string; page?: string } }>(
+  /** List meetings for an org, with optional search and status filter */
+  app.get<{
+    Querystring: {
+      orgId: string;
+      page?: string;
+      search?: string;
+      status?: string;
+    };
+  }>(
     '/',
     async (req, reply) => {
-      const { orgId, page = '1' } = req.query;
+      const { orgId, page = '1', search, status } = req.query;
       if (!orgId) return reply.status(400).send({ error: 'orgId required' });
 
       const limit = 20;
-      const offset = (Number(page) - 1) * limit;
+      const pageNum = Math.max(1, Number(page));
+      const offset = (pageNum - 1) * limit;
 
-      const { data, error } = await supabase
+      let query = supabase
         .from('meetings')
-        .select('*')
+        .select('*', { count: 'exact' })
         .eq('org_id', orgId)
         .order('created_at', { ascending: false })
         .range(offset, offset + limit - 1);
 
+      if (status) {
+        query = query.eq('status', status);
+      }
+      if (search) {
+        query = query.ilike('title', `%${search}%`);
+      }
+
+      const { data, error, count } = await query;
+
       if (error) return reply.status(500).send({ error: error.message });
-      return { meetings: data };
+      return { meetings: data, total: count ?? 0, page: pageNum, limit };
     },
   );
 
@@ -156,18 +174,18 @@ export const meetingsRouter: FastifyPluginAsync = async (app) => {
       const { id } = req.params;
       const { page = '1' } = req.query;
       const limit = 100;
-      const offset = (Number(page) - 1) * limit;
+      const offset = (Math.max(1, Number(page)) - 1) * limit;
 
-      const { data, error } = await supabase
+      const { data, error, count } = await supabase
         .from('transcript_segments')
-        .select('*')
+        .select('*', { count: 'exact' })
         .eq('meeting_id', id)
         .eq('is_final', true)
         .order('start_time')
         .range(offset, offset + limit - 1);
 
       if (error) return reply.status(500).send({ error: error.message });
-      return { segments: data };
+      return { segments: data, total: count ?? 0 };
     },
   );
 };
