@@ -17,10 +17,10 @@ const ScheduleMeetingSchema = z.object({
   path: ['zoomJoinUrl'],
 }).refine((data) => !(data.zoomJoinUrl && data.recordingUrl), {
   message: 'Choose either a Zoom join URL or a recording URL',
-  path: ['zoomJoinUrl'],
+  path: ['recordingUrl'],
 }).refine((data) => !(data.recordingUrl && data.scheduledAt), {
   message: 'Recording imports cannot be scheduled',
-  path: ['recordingUrl'],
+  path: ['scheduledAt'],
 });
 
 export const meetingsRouter: FastifyPluginAsync = async (app) => {

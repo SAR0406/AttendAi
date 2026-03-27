@@ -202,7 +202,7 @@ async function processTranscriptWithRiva(
 // ─────────────────────────────────────────────────────────────────────────────
 // Notes Worker (LLM)
 // Generates AI meeting notes using the configured LLM provider.
-// Concurrency: 20 – mostly waiting on Claude API responses.
+// Concurrency: 20 – mostly waiting on LLM API responses.
 // ─────────────────────────────────────────────────────────────────────────────
 const notesWorker = new Worker(
   'llm-notes',
