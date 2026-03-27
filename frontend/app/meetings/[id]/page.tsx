@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { use, useEffect, useState, useRef } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import Image from 'next/image';
 
@@ -57,8 +57,8 @@ function formatSecs(s: number) {
   return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
 }
 
-export default function MeetingDetailPage({ params }: { params: { id: string } }) {
-  const { id } = params;
+export default function MeetingDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params);
   const [meeting, setMeeting] = useState<Meeting | null>(null);
   const [notes, setNotes] = useState<MeetingNotes | null>(null);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);

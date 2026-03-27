@@ -41,7 +41,7 @@
 | Database | **Supabase (Postgres)** | Row-Level Security for multi-tenant isolation |
 | File storage | **Cloudflare R2** | Zero egress cost vs. S3 |
 | Auth | **Clerk** | Multi-org support out of the box |
-| Frontend | **Next.js 14 App Router** | Server components + WebSocket-ready |
+| Frontend | **Next.js 15 App Router** | Server components + WebSocket-ready |
 
 ---
 
