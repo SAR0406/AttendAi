@@ -69,7 +69,7 @@ export default function DashboardPage() {
           <p className="text-5xl mb-4">🤖</p>
           <p className="font-medium">No meetings yet.</p>
           <p className="text-sm mt-1">
-            Schedule one and AttendAi will join in your place.
+            Schedule one or drop in a recording URL to generate notes for free.
           </p>
         </div>
       ) : (

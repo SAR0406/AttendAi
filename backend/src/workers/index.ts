@@ -1,9 +1,9 @@
 import 'dotenv/config';
 import { Worker } from 'bullmq';
-import { redis } from '../queue';
+import { redis, notesQueue } from '../queue';
 import { supabase } from '../db/client';
 import { getBotTranscript, getBotAudioUrl } from '../services/recallService';
-import { generateMeetingNotes } from '../services/claudeService';
+import { generateMeetingNotes } from '../services/llmService';
 import { transcribeAudio } from '../services/rivaService';
 import type { RivaTranscribeOptions } from '../services/rivaService';
 import {
@@ -24,6 +24,7 @@ const connection = { connection: redis };
 type TranscriptionProvider = 'deepgram' | 'riva';
 const TRANSCRIPTION_PROVIDER: TranscriptionProvider =
   (process.env.TRANSCRIPTION_PROVIDER as TranscriptionProvider | undefined) ?? 'deepgram';
+const LLM_PROVIDER = process.env.LLM_PROVIDER ?? 'nim';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Transcript Worker
@@ -35,19 +36,36 @@ const TRANSCRIPTION_PROVIDER: TranscriptionProvider =
 const transcriptWorker = new Worker(
   'transcript-processing',
   async (job) => {
-    const { meetingId, botId, orgId } = job.data as {
+    const { meetingId, botId, orgId, audioUrl, enqueueNotes } = job.data as {
       meetingId: string;
-      botId: string;
+      botId?: string;
       orgId: string;
+      audioUrl?: string;
+      enqueueNotes?: boolean;
     };
     console.log(
       `[transcript] Processing meeting ${meetingId} via provider="${TRANSCRIPTION_PROVIDER}"`,
     );
 
-    if (TRANSCRIPTION_PROVIDER === 'riva') {
-      await processTranscriptWithRiva(meetingId, botId, orgId);
+    if (audioUrl) {
+      if (TRANSCRIPTION_PROVIDER !== 'riva') {
+        throw new Error('Recording imports require TRANSCRIPTION_PROVIDER=riva');
+      }
+      await processTranscriptWithRiva(meetingId, orgId, { audioUrl });
+    } else if (TRANSCRIPTION_PROVIDER === 'riva') {
+      if (!botId) {
+        throw new Error('Missing botId for Riva transcript processing');
+      }
+      await processTranscriptWithRiva(meetingId, orgId, { botId });
     } else {
+      if (!botId) {
+        throw new Error('Missing botId for Deepgram transcript processing');
+      }
       await processTranscriptWithDeepgram(meetingId, botId, orgId);
+    }
+
+    if (audioUrl && enqueueNotes) {
+      await notesQueue.add('generate-notes', { meetingId, orgId });
     }
 
     console.log(`[transcript] Done for meeting ${meetingId}`);
@@ -103,8 +121,8 @@ async function processTranscriptWithDeepgram(
 }
 
 /**
- * Riva path: download the meeting audio from Recall.ai then re-transcribe
- * using NVIDIA Riva whisper-large-v3 (gRPC, grpc.nvcf.nvidia.com:443).
+ * Riva path: download the meeting audio (Recall.ai or recording URL) then
+ * re-transcribe using NVIDIA Riva whisper-large-v3 (gRPC, grpc.nvcf.nvidia.com:443).
  *
  * Riva options are read from environment variables:
  *   RIVA_LANGUAGE_CODE   – BCP-47 code, default "en". Use "multi" for auto-detection.
@@ -112,19 +130,18 @@ async function processTranscriptWithDeepgram(
  */
 async function processTranscriptWithRiva(
   meetingId: string,
-  botId: string,
   orgId: string,
+  source: { botId?: string; audioUrl?: string },
 ) {
-  // 1. Download the meeting audio recording from Recall.ai
-  const audioUrl = await getBotAudioUrl(botId);
+  const audioUrl = source.audioUrl ?? (source.botId ? await getBotAudioUrl(source.botId) : null);
   if (!audioUrl) {
-    console.warn(`[transcript:riva] No audio URL for bot ${botId} – skipping`);
+    console.warn('[transcript:riva] No audio URL provided – skipping');
     return;
   }
 
   const audioResp = await fetch(audioUrl);
   if (!audioResp.ok) {
-    throw new Error(`Failed to download audio from Recall.ai: ${audioResp.status}`);
+    throw new Error(`Failed to download audio: ${audioResp.status}`);
   }
   const audioBuffer = Buffer.from(await audioResp.arrayBuffer());
 
@@ -184,7 +201,7 @@ async function processTranscriptWithRiva(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Notes Worker (LLM)
-// Generates AI meeting notes using Claude with chunked transcript processing.
+// Generates AI meeting notes using the configured LLM provider.
 // Concurrency: 20 – mostly waiting on Claude API responses.
 // ─────────────────────────────────────────────────────────────────────────────
 const notesWorker = new Worker(
@@ -228,6 +245,19 @@ const notesWorker = new Worker(
         ...notes,
         raw_llm_json: notes,
       });
+    }
+
+    const { data: meeting } = await supabase
+      .from('meetings')
+      .select('recall_bot_id, status')
+      .eq('id', meetingId)
+      .single();
+
+    if (meeting && !meeting.recall_bot_id && meeting.status !== 'completed') {
+      await supabase
+        .from('meetings')
+        .update({ status: 'completed', ended_at: new Date().toISOString() })
+        .eq('id', meetingId);
     }
 
     console.log(`[notes] Done for meeting ${meetingId}`);
@@ -370,5 +400,6 @@ for (const [name, worker] of Object.entries({
 }
 
 console.log(
-  `AttendAi workers started – transcription provider: ${TRANSCRIPTION_PROVIDER}`,
+  `AttendAi workers started – transcription provider: ${TRANSCRIPTION_PROVIDER}, ` +
+  `llm provider: ${LLM_PROVIDER}`,
 );
