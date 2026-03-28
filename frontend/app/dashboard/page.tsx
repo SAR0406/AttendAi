@@ -46,7 +46,9 @@ export default function DashboardPage() {
   const [refreshing, setRefreshing] = useState(false);
 
   const orgId =
-    (user?.organizationMemberships?.[0]?.organization?.id as string | undefined) ?? '';
+    (user?.organizationMemberships?.[0]?.organization?.id as string | undefined) ??
+    user?.id ??
+    '';
 
   async function fetchMeetings(isManual = false) {
     if (!orgId) return;

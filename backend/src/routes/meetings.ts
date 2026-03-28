@@ -83,7 +83,12 @@ export const meetingsRouter: FastifyPluginAsync = async (app) => {
   /** Schedule (or immediately start) a bot for a meeting, or import a recording */
   app.post('/', async (req, reply) => {
     const parsed = ScheduleMeetingSchema.safeParse(req.body);
-    if (!parsed.success) return reply.status(400).send({ error: parsed.error.format() });
+    if (!parsed.success) {
+      const message = parsed.error.issues
+        .map((issue) => (issue.path.length ? `${issue.path.join('.')}: ${issue.message}` : issue.message))
+        .join('; ');
+      return reply.status(400).send({ error: message });
+    }
 
     const { title, zoomJoinUrl, recordingUrl, scheduledAt, orgId, userId } = parsed.data;
     const meetingId = uuidv4();
