@@ -84,7 +84,9 @@ export const meetingsRouter: FastifyPluginAsync = async (app) => {
   app.post('/', async (req, reply) => {
     const parsed = ScheduleMeetingSchema.safeParse(req.body);
     if (!parsed.success) {
-      const message = parsed.error.issues.map((issue) => issue.message).join('; ');
+      const message = parsed.error.issues
+        .map((issue) => (issue.path.length ? `${issue.path.join('.')}: ${issue.message}` : issue.message))
+        .join('; ');
       return reply.status(400).send({ error: message });
     }
 
