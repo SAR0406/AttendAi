@@ -4,6 +4,7 @@ import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import { meetingsRouter } from './routes/meetings';
+import { identityRouter } from './routes/identity';
 import { webhooksRouter } from './routes/webhooks';
 import { reportsRouter } from './routes/reports';
 import { redis } from './queue';
@@ -33,6 +34,7 @@ async function bootstrap() {
 
   // Routes
   await app.register(meetingsRouter, { prefix: '/api/meetings' });
+  await app.register(identityRouter, { prefix: '/api/identity' });
   await app.register(webhooksRouter, { prefix: '/api/webhooks' });
   await app.register(reportsRouter, { prefix: '/api/reports' });
 

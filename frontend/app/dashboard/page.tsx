@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import { useUser } from '@clerk/nextjs';
 import Link from 'next/link';
 import { Plus, Search, RefreshCw } from 'lucide-react';
@@ -55,11 +55,37 @@ export default function DashboardPage() {
   const userEmail = user?.primaryEmailAddress?.emailAddress ?? '';
   const userName = user?.fullName ?? user?.username;
 
+  const syncIdentity = useCallback(async () => {
+    if (!orgId || !user?.id) return;
+
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/identity`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orgId,
+          orgName: orgName || undefined,
+          userId: user.id,
+          userEmail: userEmail || undefined,
+          userName: userName || undefined,
+        }),
+      });
+
+      if (!res.ok) {
+        const body = (await res.json()) as { error?: string };
+        console.warn('[identity] Sync failed', body.error ?? res.statusText);
+      }
+    } catch (err) {
+      console.warn('[identity] Sync failed', err);
+    }
+  }, [orgId, orgName, user?.id, userEmail, userName]);
+
   async function fetchMeetings(isManual = false) {
     if (!orgId) return;
     if (isManual) setRefreshing(true);
 
     try {
+      await syncIdentity();
       const params = new URLSearchParams({ orgId });
       const res = await fetch(
         `${process.env.NEXT_PUBLIC_API_URL}/api/meetings?${params.toString()}`,

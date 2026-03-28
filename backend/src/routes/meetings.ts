@@ -3,127 +3,8 @@ import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import { supabase } from '../db/client';
 import { transcriptQueue } from '../queue';
+import { ensureOrganization, ensureUser } from '../services/identityService';
 import { createBot, stopBot } from '../services/recallService';
-import { isUuid } from '../utils/ids';
-
-const DEFAULT_ORG_NAME = 'Personal';
-
-async function resolveOrgId(
-  orgId: string,
-  orgName?: string,
-  createIfMissing = false,
-): Promise<{ orgId: string | null; error?: 'lookup' | 'insert' | 'not_found' }> {
-  if (isUuid(orgId)) {
-    // Verify the org exists to avoid FK errors when creating users/meetings.
-    const { data: orgRow, error: orgLookupErr } = await supabase
-      .from('organizations')
-      .select('id')
-      .eq('id', orgId)
-      .single();
-
-    if (orgLookupErr) {
-      console.error('[meetings] Failed to lookup org by id', orgLookupErr);
-      return { orgId: null, error: 'lookup' };
-    }
-    return orgRow?.id ? { orgId: orgRow.id as string } : { orgId: null, error: 'not_found' };
-  }
-
-  const { data: orgRow, error: orgLookupErr } = await supabase
-    .from('organizations')
-    .select('id')
-    .eq('clerk_id', orgId)
-    .single();
-
-  if (orgLookupErr) {
-    console.error('[meetings] Failed to lookup org by clerk_id', orgLookupErr);
-    return { orgId: null, error: 'lookup' };
-  }
-  if (orgRow?.id) return { orgId: orgRow.id as string };
-  if (!createIfMissing) return { orgId: null, error: 'not_found' };
-
-  // Treat empty, whitespace-only, or undefined org names as unset and fall back to the default.
-  const name = orgName?.trim() || DEFAULT_ORG_NAME;
-  const { data: newOrg, error: orgInsertErr } = await supabase
-    .from('organizations')
-    .insert({ name, clerk_id: orgId })
-    .select('id')
-    .single();
-
-  if (orgInsertErr) {
-    if (orgInsertErr.code === '23505') {
-      const { data: existingOrg, error: existingErr } = await supabase
-        .from('organizations')
-        .select('id')
-        .eq('clerk_id', orgId)
-        .single();
-      if (existingErr) {
-        console.error('[meetings] Failed to re-fetch org after conflict', existingErr);
-        return { orgId: null, error: 'insert' };
-      }
-      if (existingOrg?.id) return { orgId: existingOrg.id as string };
-    }
-    console.error('[meetings] Failed to create org', orgInsertErr);
-    return { orgId: null, error: 'insert' };
-  }
-  if (!newOrg) {
-    console.error('[meetings] Failed to create org: no data returned');
-    return { orgId: null, error: 'insert' };
-  }
-  return { orgId: newOrg.id as string };
-}
-
-async function resolveUserId(
-  userId: string,
-  orgId: string,
-  userEmail?: string,
-  userName?: string,
-): Promise<{ userId: string | null; error?: 'lookup' | 'insert' | 'missing_email' }> {
-  const { data: userRow, error: userLookupErr } = await supabase
-    .from('users')
-    .select('id')
-    .eq('clerk_id', userId)
-    .single();
-
-  if (userLookupErr) {
-    console.error('[meetings] Failed to lookup user', userLookupErr);
-    return { userId: null, error: 'lookup' };
-  }
-  if (userRow?.id) return { userId: userRow.id as string };
-  if (!userEmail) return { userId: null, error: 'missing_email' };
-
-  const { data: newUser, error: userInsertErr } = await supabase
-    .from('users')
-    .insert({
-      org_id: orgId,
-      clerk_id: userId,
-      email: userEmail,
-      name: userName ?? null,
-    })
-    .select('id')
-    .single();
-
-  if (userInsertErr) {
-    if (userInsertErr.code === '23505') {
-      const { data: existingUser, error: existingErr } = await supabase
-        .from('users')
-        .select('id')
-        .eq('clerk_id', userId)
-        .single();
-      if (existingErr) {
-        console.error('[meetings] Failed to re-fetch user after conflict', existingErr);
-        return { userId: null, error: 'insert' };
-      }
-      if (existingUser?.id) return { userId: existingUser.id as string };
-    }
-    console.error('[meetings] Failed to create user', userInsertErr);
-    return { userId: null, error: 'insert' };
-  }
-  if (!newUser) {
-    console.error('[meetings] Failed to create user: no data returned');
-    return { userId: null, error: 'insert' };
-  }
-  return { userId: newUser.id as string };
-}
 
 const ScheduleMeetingSchema = z.object({
   title: z.string().min(1).max(255).optional(),
@@ -160,9 +41,9 @@ export const meetingsRouter: FastifyPluginAsync = async (app) => {
       const pageNum = Math.max(1, Number(page));
       const offset = (pageNum - 1) * limit;
 
-      const { orgId: resolvedOrgId, error: orgError } = await resolveOrgId(orgId);
+      const { orgId: resolvedOrgId, error: orgError } = await ensureOrganization({ orgId });
       if (!resolvedOrgId) {
-        if (orgError === 'lookup' || orgError === 'insert') {
+        if (orgError === 'lookup' || orgError === 'insert' || orgError === 'update') {
           return reply.status(500).send({ error: 'Unable to resolve organization' });
         }
         return { meetings: [], total: 0, page: pageNum, limit };
@@ -234,19 +115,25 @@ export const meetingsRouter: FastifyPluginAsync = async (app) => {
     } = parsed.data;
     const meetingId = uuidv4();
 
-    const { orgId: resolvedOrgId, error: orgError } = await resolveOrgId(orgId, orgName, true);
+    const { orgId: resolvedOrgId, error: orgError } = await ensureOrganization({
+      orgId,
+      orgName,
+      createIfMissing: true,
+    });
     if (!resolvedOrgId) {
       const status = orgError === 'not_found' ? 400 : 500;
-      const message = orgError === 'not_found' ? 'Organization not found' : 'Unable to resolve organization';
+      const message =
+        orgError === 'not_found' ? 'Organization not found' : 'Unable to resolve organization';
       return reply.status(status).send({ error: message });
     }
 
-    const { userId: resolvedUserId, error: userError } = await resolveUserId(
+    const { userId: resolvedUserId, error: userError } = await ensureUser({
       userId,
-      resolvedOrgId,
+      orgId: resolvedOrgId,
       userEmail,
       userName,
-    );
+      createIfMissing: true,
+    });
     if (!resolvedUserId) {
       if (userError === 'missing_email') {
         return reply.status(400).send({
