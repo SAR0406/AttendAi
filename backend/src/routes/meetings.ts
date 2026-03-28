@@ -93,11 +93,22 @@ export const meetingsRouter: FastifyPluginAsync = async (app) => {
     const { title, zoomJoinUrl, recordingUrl, scheduledAt, orgId, userId } = parsed.data;
     const meetingId = uuidv4();
 
+    // Resolve the Clerk user ID to the internal database UUID
+    const { data: userRow, error: userLookupErr } = await supabase
+      .from('users')
+      .select('id')
+      .eq('clerk_id', userId)
+      .single();
+
+    if (userLookupErr || !userRow) {
+      return reply.status(400).send({ error: 'User not found' });
+    }
+
     // Persist the meeting row first
     const { error: dbErr } = await supabase.from('meetings').insert({
       id: meetingId,
       org_id: orgId,
-      user_id: userId,
+      user_id: userRow.id,
       title: title ?? 'Untitled Meeting',
       zoom_join_url: zoomJoinUrl ?? recordingUrl,
       status: recordingUrl ? 'processing' : scheduledAt ? 'scheduled' : 'joining',

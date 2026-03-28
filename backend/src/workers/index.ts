@@ -347,10 +347,30 @@ const deletionWorker = new Worker(
     const { userId, orgId } = job.data as { userId?: string; orgId?: string };
     console.log(`[deletion] Starting data deletion for userId=${userId} orgId=${orgId}`);
 
+    // Resolve Clerk user ID to the internal database UUID
+    let internalUserId: string | undefined;
+    if (userId) {
+      const { data: userRow } = await supabase
+        .from('users')
+        .select('id')
+        .eq('clerk_id', userId)
+        .single();
+      internalUserId = userRow?.id;
+      if (!internalUserId) {
+        console.warn(`[deletion] No user found for clerk_id=${userId}; skipping user-scoped deletion`);
+      }
+    }
+
+    // Guard: if neither filter is resolvable, skip to avoid an unscoped delete
+    if (!orgId && !internalUserId) {
+      console.warn('[deletion] No valid filter available; aborting to prevent unscoped deletion');
+      return;
+    }
+
     // Find all meetings for this user/org
     let query = supabase.from('meetings').select('id');
     if (orgId) query = query.eq('org_id', orgId);
-    if (userId) query = query.eq('user_id', userId);
+    if (internalUserId) query = query.eq('user_id', internalUserId);
     const { data: meetings } = await query;
 
     for (const m of meetings ?? []) {
