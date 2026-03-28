@@ -4,7 +4,13 @@ import { isUuid } from '../utils/ids';
 export const DEFAULT_ORG_NAME = 'Personal';
 
 type OrgResolutionError = 'lookup' | 'insert' | 'update' | 'not_found';
-type UserResolutionError = 'lookup' | 'insert' | 'update' | 'missing_email' | 'not_found';
+type UserResolutionError =
+  | 'lookup'
+  | 'insert'
+  | 'update'
+  | 'missing_email'
+  | 'not_found'
+  | 'org_mismatch';
 
 export async function ensureOrganization({
   orgId,
@@ -127,8 +133,12 @@ export async function ensureUser({
   }
 
   if (userRow?.id) {
+    if (orgId && userRow.org_id !== orgId) {
+      console.warn('[identity] User org mismatch', { userId, orgId, existingOrgId: userRow.org_id });
+      return { userId: null, error: 'org_mismatch' };
+    }
+
     const updates: Record<string, string | null> = {};
-    if (orgId && userRow.org_id !== orgId) updates.org_id = orgId;
     if (trimmedEmail && userRow.email !== trimmedEmail) updates.email = trimmedEmail;
     if (trimmedName && userRow.name !== trimmedName) updates.name = trimmedName;
 

@@ -140,6 +140,9 @@ export const meetingsRouter: FastifyPluginAsync = async (app) => {
           error: 'User not found; include userEmail to auto-create the user record',
         });
       }
+      if (userError === 'org_mismatch') {
+        return reply.status(403).send({ error: 'User is not associated with this organization' });
+      }
       return reply.status(500).send({ error: 'Unable to resolve user' });
     }
 
