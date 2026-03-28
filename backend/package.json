@@ -1,6 +1,6 @@
 {
   "name": "attendai-backend",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "AttendAi backend – AI-powered meeting attendance service",
   "main": "dist/index.js",
   "scripts": {

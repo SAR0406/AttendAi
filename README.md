@@ -1,5 +1,7 @@
 # AttendAi 🤖
 
+[![version](https://img.shields.io/badge/version-2.0.0-blue)](./CHANGELOG.md) [![branch](https://img.shields.io/badge/branch-main-brightgreen)](https://github.com/SAR0406/AttendAi/tree/main)
+
 **AI-powered meeting attendance for Zoom.** AttendAi sends a bot to join meetings in your place, delivers a real-time diarized transcript, and produces AI-generated notes — action items, decisions, key points, and open questions — the moment the meeting ends.
 
 ---
@@ -375,6 +377,53 @@ npm run typecheck
 # Lint all workspaces
 npm run lint
 ```
+
+---
+
+## Git Workflow
+
+`main` is always the **latest stable branch**. All feature work is done in separate branches and merged via Pull Requests.
+
+### Get the latest code
+
+```bash
+git checkout main
+git pull origin main
+```
+
+### Start a new feature
+
+```bash
+# Create a branch from main
+git checkout -b feature/my-feature
+
+# Develop, then commit
+git add .
+git commit -m "feat: describe your change"
+
+# Push and open a PR targeting main
+git push origin feature/my-feature
+```
+
+### Release a new version
+
+```bash
+# 1. Bump version in package.json / CHANGELOG.md
+# 2. Commit and tag
+git add .
+git commit -m "chore: release v2.1.0"
+git tag -a v2.1.0 -m "Release v2.1.0"
+git push origin main --tags
+```
+
+### Check what branches are ahead of main
+
+```bash
+git fetch --all
+git log main..origin/feature/my-branch --oneline
+```
+
+See [CHANGELOG.md](./CHANGELOG.md) for the full version history and detailed git commands.
 
 ---
 
