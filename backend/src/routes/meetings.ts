@@ -4,6 +4,126 @@ import { v4 as uuidv4 } from 'uuid';
 import { supabase } from '../db/client';
 import { transcriptQueue } from '../queue';
 import { createBot, stopBot } from '../services/recallService';
+import { isUuid } from '../utils/ids';
+
+const DEFAULT_ORG_NAME = 'Personal';
+
+async function resolveOrgId(
+  orgId: string,
+  orgName?: string,
+  createIfMissing = false,
+): Promise<{ orgId: string | null; error?: 'lookup' | 'insert' | 'not_found' }> {
+  if (isUuid(orgId)) {
+    // Verify the org exists to avoid FK errors when creating users/meetings.
+    const { data: orgRow, error: orgLookupErr } = await supabase
+      .from('organizations')
+      .select('id')
+      .eq('id', orgId)
+      .single();
+
+    if (orgLookupErr) {
+      console.error('[meetings] Failed to lookup org by id', orgLookupErr);
+      return { orgId: null, error: 'lookup' };
+    }
+    return orgRow?.id ? { orgId: orgRow.id as string } : { orgId: null, error: 'not_found' };
+  }
+
+  const { data: orgRow, error: orgLookupErr } = await supabase
+    .from('organizations')
+    .select('id')
+    .eq('clerk_id', orgId)
+    .single();
+
+  if (orgLookupErr) {
+    console.error('[meetings] Failed to lookup org by clerk_id', orgLookupErr);
+    return { orgId: null, error: 'lookup' };
+  }
+  if (orgRow?.id) return { orgId: orgRow.id as string };
+  if (!createIfMissing) return { orgId: null, error: 'not_found' };
+
+  // Treat empty, whitespace-only, or undefined org names as unset and fall back to the default.
+  const name = orgName?.trim() || DEFAULT_ORG_NAME;
+  const { data: newOrg, error: orgInsertErr } = await supabase
+    .from('organizations')
+    .insert({ name, clerk_id: orgId })
+    .select('id')
+    .single();
+
+  if (orgInsertErr) {
+    if (orgInsertErr.code === '23505') {
+      const { data: existingOrg, error: existingErr } = await supabase
+        .from('organizations')
+        .select('id')
+        .eq('clerk_id', orgId)
+        .single();
+      if (existingErr) {
+        console.error('[meetings] Failed to re-fetch org after conflict', existingErr);
+        return { orgId: null, error: 'insert' };
+      }
+      if (existingOrg?.id) return { orgId: existingOrg.id as string };
+    }
+    console.error('[meetings] Failed to create org', orgInsertErr);
+    return { orgId: null, error: 'insert' };
+  }
+  if (!newOrg) {
+    console.error('[meetings] Failed to create org: no data returned');
+    return { orgId: null, error: 'insert' };
+  }
+  return { orgId: newOrg.id as string };
+}
+
+async function resolveUserId(
+  userId: string,
+  orgId: string,
+  userEmail?: string,
+  userName?: string,
+): Promise<{ userId: string | null; error?: 'lookup' | 'insert' | 'missing_email' }> {
+  const { data: userRow, error: userLookupErr } = await supabase
+    .from('users')
+    .select('id')
+    .eq('clerk_id', userId)
+    .single();
+
+  if (userLookupErr) {
+    console.error('[meetings] Failed to lookup user', userLookupErr);
+    return { userId: null, error: 'lookup' };
+  }
+  if (userRow?.id) return { userId: userRow.id as string };
+  if (!userEmail) return { userId: null, error: 'missing_email' };
+
+  const { data: newUser, error: userInsertErr } = await supabase
+    .from('users')
+    .insert({
+      org_id: orgId,
+      clerk_id: userId,
+      email: userEmail,
+      name: userName ?? null,
+    })
+    .select('id')
+    .single();
+
+  if (userInsertErr) {
+    if (userInsertErr.code === '23505') {
+      const { data: existingUser, error: existingErr } = await supabase
+        .from('users')
+        .select('id')
+        .eq('clerk_id', userId)
+        .single();
+      if (existingErr) {
+        console.error('[meetings] Failed to re-fetch user after conflict', existingErr);
+        return { userId: null, error: 'insert' };
+      }
+      if (existingUser?.id) return { userId: existingUser.id as string };
+    }
+    console.error('[meetings] Failed to create user', userInsertErr);
+    return { userId: null, error: 'insert' };
+  }
+  if (!newUser) {
+    console.error('[meetings] Failed to create user: no data returned');
+    return { userId: null, error: 'insert' };
+  }
+  return { userId: newUser.id as string };
+}
 
 const ScheduleMeetingSchema = z.object({
   title: z.string().min(1).max(255).optional(),
@@ -11,6 +131,9 @@ const ScheduleMeetingSchema = z.object({
   recordingUrl: z.string().url().optional(),
   scheduledAt: z.string().datetime().optional(),
   orgId: z.string().min(1),
+  orgName: z.string().min(1).max(255).optional(),
+  userEmail: z.string().email().optional(),
+  userName: z.string().min(1).max(255).optional(),
   /** Clerk user IDs can be UUIDs or the "user_xxx" format */
   userId: z.string().min(1),
 }).refine((data) => data.zoomJoinUrl || data.recordingUrl, {
@@ -37,10 +160,18 @@ export const meetingsRouter: FastifyPluginAsync = async (app) => {
       const pageNum = Math.max(1, Number(page));
       const offset = (pageNum - 1) * limit;
 
+      const { orgId: resolvedOrgId, error: orgError } = await resolveOrgId(orgId);
+      if (!resolvedOrgId) {
+        if (orgError === 'lookup' || orgError === 'insert') {
+          return reply.status(500).send({ error: 'Unable to resolve organization' });
+        }
+        return { meetings: [], total: 0, page: pageNum, limit };
+      }
+
       let query = supabase
         .from('meetings')
         .select('*', { count: 'exact' })
-        .eq('org_id', orgId);
+        .eq('org_id', resolvedOrgId);
 
       if (search) {
         query = query.ilike('title', `%${search}%`);
@@ -90,25 +221,46 @@ export const meetingsRouter: FastifyPluginAsync = async (app) => {
       return reply.status(400).send({ error: message });
     }
 
-    const { title, zoomJoinUrl, recordingUrl, scheduledAt, orgId, userId } = parsed.data;
+    const {
+      title,
+      zoomJoinUrl,
+      recordingUrl,
+      scheduledAt,
+      orgId,
+      orgName,
+      userEmail,
+      userName,
+      userId,
+    } = parsed.data;
     const meetingId = uuidv4();
 
-    // Resolve the Clerk user ID to the internal database UUID
-    const { data: userRow, error: userLookupErr } = await supabase
-      .from('users')
-      .select('id')
-      .eq('clerk_id', userId)
-      .single();
+    const { orgId: resolvedOrgId, error: orgError } = await resolveOrgId(orgId, orgName, true);
+    if (!resolvedOrgId) {
+      const status = orgError === 'not_found' ? 400 : 500;
+      const message = orgError === 'not_found' ? 'Organization not found' : 'Unable to resolve organization';
+      return reply.status(status).send({ error: message });
+    }
 
-    if (userLookupErr || !userRow) {
-      return reply.status(400).send({ error: 'User not found' });
+    const { userId: resolvedUserId, error: userError } = await resolveUserId(
+      userId,
+      resolvedOrgId,
+      userEmail,
+      userName,
+    );
+    if (!resolvedUserId) {
+      if (userError === 'missing_email') {
+        return reply.status(400).send({
+          error: 'User not found; include userEmail to auto-create the user record',
+        });
+      }
+      return reply.status(500).send({ error: 'Unable to resolve user' });
     }
 
     // Persist the meeting row first
     const { error: dbErr } = await supabase.from('meetings').insert({
       id: meetingId,
-      org_id: orgId,
-      user_id: userRow.id,
+      org_id: resolvedOrgId,
+      user_id: resolvedUserId,
       title: title ?? 'Untitled Meeting',
       zoom_join_url: zoomJoinUrl ?? recordingUrl,
       status: recordingUrl ? 'processing' : scheduledAt ? 'scheduled' : 'joining',

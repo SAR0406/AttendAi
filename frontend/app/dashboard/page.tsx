@@ -35,6 +35,8 @@ function MeetingCardSkeleton() {
   );
 }
 
+const DEFAULT_ORG_NAME = 'Personal';
+
 export default function DashboardPage() {
   const { user } = useUser();
   const [meetings, setMeetings] = useState<Meeting[]>([]);
@@ -49,6 +51,9 @@ export default function DashboardPage() {
     (user?.organizationMemberships?.[0]?.organization?.id as string | undefined) ??
     user?.id ??
     '';
+  const orgName = user?.organizationMemberships?.[0]?.organization?.name ?? DEFAULT_ORG_NAME;
+  const userEmail = user?.primaryEmailAddress?.emailAddress ?? '';
+  const userName = user?.fullName ?? user?.username;
 
   async function fetchMeetings(isManual = false) {
     if (!orgId) return;
@@ -206,7 +211,10 @@ export default function DashboardPage() {
       {showSchedule && (
         <ScheduleMeetingModal
           orgId={orgId}
+          orgName={orgName}
           userId={user?.id ?? ''}
+          userEmail={userEmail}
+          userName={userName}
           onClose={() => setShowSchedule(false)}
           onScheduled={() => {
             setShowSchedule(false);

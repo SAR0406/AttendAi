@@ -5,12 +5,23 @@ import { X } from 'lucide-react';
 
 interface Props {
   orgId: string;
+  orgName?: string;
   userId: string;
+  userEmail?: string;
+  userName?: string;
   onClose: () => void;
   onScheduled: () => void;
 }
 
-export function ScheduleMeetingModal({ orgId, userId, onClose, onScheduled }: Props) {
+export function ScheduleMeetingModal({
+  orgId,
+  orgName,
+  userId,
+  userEmail,
+  userName,
+  onClose,
+  onScheduled,
+}: Props) {
   const [title, setTitle] = useState('');
   const [zoomJoinUrl, setZoomJoinUrl] = useState('');
   const [recordingUrl, setRecordingUrl] = useState('');
@@ -43,7 +54,10 @@ export function ScheduleMeetingModal({ orgId, userId, onClose, onScheduled }: Pr
           recordingUrl: source === 'recording' ? recordingUrl : undefined,
           scheduledAt: source === 'zoom' ? scheduledAt || undefined : undefined,
           orgId,
+          orgName: orgName || undefined,
           userId,
+          userEmail: userEmail || undefined,
+          userName: userName || undefined,
         }),
       });
 

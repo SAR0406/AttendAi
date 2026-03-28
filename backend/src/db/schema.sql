@@ -12,6 +12,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE TABLE IF NOT EXISTS organizations (
   id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   name        TEXT NOT NULL,
+  clerk_id    TEXT UNIQUE,
   plan        TEXT NOT NULL DEFAULT 'free',       -- free | pro | team | enterprise
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()

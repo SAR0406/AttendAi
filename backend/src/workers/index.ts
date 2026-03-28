@@ -11,6 +11,7 @@ import {
   compressFrame,
 } from '../services/screenshotService';
 import { uploadFile, deleteFile } from '../services/storageService';
+import { isUuid } from '../utils/ids';
 
 const connection = { connection: redis };
 
@@ -349,27 +350,50 @@ const deletionWorker = new Worker(
 
     // Resolve Clerk user ID to the internal database UUID
     let internalUserId: string | undefined;
+    let userOrgId: string | undefined;
     if (userId) {
-      const { data: userRow } = await supabase
+      const { data: userRow, error: userLookupErr } = await supabase
         .from('users')
-        .select('id')
+        .select('id, org_id')
         .eq('clerk_id', userId)
         .single();
+      if (userLookupErr) {
+        console.error('[deletion] Failed to lookup user', userLookupErr);
+      }
       internalUserId = userRow?.id;
+      userOrgId = userRow?.org_id;
       if (!internalUserId) {
         console.warn(`[deletion] No user found for clerk_id=${userId}; skipping user-scoped deletion`);
       }
     }
+    // Continue to allow org-scoped deletion even if the user lookup fails.
+
+    // Resolve Clerk org ID to the internal database UUID
+    let internalOrgId = orgId;
+    if (orgId && !isUuid(orgId)) {
+      const { data: orgRow, error: orgLookupErr } = await supabase
+        .from('organizations')
+        .select('id')
+        .eq('clerk_id', orgId)
+        .single();
+      if (orgLookupErr) {
+        console.error('[deletion] Failed to lookup org', orgLookupErr);
+      }
+      internalOrgId = orgRow?.id;
+      if (!internalOrgId) {
+        console.warn(`[deletion] No org found for clerk_id=${orgId}; skipping org-scoped deletion`);
+      }
+    }
 
     // Guard: if neither filter is resolvable, skip to avoid an unscoped delete
-    if (!orgId && !internalUserId) {
+    if (!internalOrgId && !internalUserId) {
       console.warn('[deletion] No valid filter available; aborting to prevent unscoped deletion');
       return;
     }
 
     // Find all meetings for this user/org
     let query = supabase.from('meetings').select('id');
-    if (orgId) query = query.eq('org_id', orgId);
+    if (internalOrgId) query = query.eq('org_id', internalOrgId);
     if (internalUserId) query = query.eq('user_id', internalUserId);
     const { data: meetings } = await query;
 
@@ -391,12 +415,17 @@ const deletionWorker = new Worker(
     }
 
     // Audit the deletion
-    if (orgId) {
+    const auditOrgId = internalOrgId ?? userOrgId;
+
+    if (auditOrgId) {
+      // auditOrgId provides the org context; resource reflects the deletion scope.
+      const resource = internalOrgId ? 'organization' : 'user';
+      const resourceId = internalOrgId ?? internalUserId;
       await supabase.from('audit_events').insert({
-        org_id: orgId,
+        org_id: auditOrgId,
         action: 'data_deletion',
-        resource: orgId ? 'organization' : 'user',
-        resource_id: orgId ?? userId,
+        resource,
+        resource_id: resourceId,
         metadata: { userId, orgId },
       });
     }
