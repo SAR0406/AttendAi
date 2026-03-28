@@ -12,6 +12,11 @@ body {
   background: rgb(var(--background-start-rgb));
 }
 
+/* Smooth scroll for transcript auto-scroll */
+html {
+  scroll-behavior: smooth;
+}
+
 /* Thin, branded scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
