@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils';
-import { STATUS_COLORS, formatStatus } from '@/lib/status';
+import { STATUS_COLORS, STATUS_LABELS } from '@/lib/constants';
 
 interface StatusBadgeProps {
   status: string;
@@ -15,7 +15,7 @@ export function StatusBadge({ status, className }: StatusBadgeProps) {
         className,
       )}
     >
-      {formatStatus(status)}
+      {STATUS_LABELS[status] ?? (typeof status === 'string' ? status.replace('_', ' ') : status)}
     </span>
   );
 }
